@@ -1,0 +1,197 @@
+---
+title: "LaskennallinenHarkka"
+output: html_document
+date: "2025-06-14"
+---
+
+##### Teht1
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(rstan)
+set.seed(200)
+```
+```{r}
+N <- 50
+alpha0 <- 0
+beta0 <- 3
+sigma0 <- 2
+
+x <- seq(0, 10, length.out = N)
+y <- alpha0 + beta0 * x + rnorm(N, 0, sigma0)
+plot(x, y)
+
+fit_normal <- function(x, y) {
+  # Prepare data for Stan
+  stan_data <- list(N = N, x = x, y = y)
+  
+  # Compile and sample from Stan model
+  fit <- stan(file = "linear_regression_normal.stan", data = stan_data)
+  as.data.frame(fit)
+}
+
+res_normal <- fit_normal(x, y)
+
+plot(res_normal$alpha, res_normal$beta)
+
+plot(x, y, ylim = c(-10,40))
+for (i in seq(1, length(res_normal$alpha), length.out = 100)) {
+  abline(res_normal$alpha[i], res_normal$beta[i], col = adjustcolor("blue", alpha = 0.1))
+}
+abline(alpha0, beta0, col = 'black', lw=2)
+```
+
+Nyt sovitetaan malli aineistoon, jonka virheet on simuloitu käyttäen t-jakaumaa
+
+```{r}
+df0 <- 1.5
+x2 <- seq(0, 10, length.out = N)
+y2 <- alpha0 + beta0 * x  + rt(N, df = df0) * sigma0
+res_tNormal <- fit_normal(x2, y2)
+
+plot(x2, y2, ylim = c(-10,40))
+for (i in seq(1, length(res_tNormal$alpha), length.out = 100)) {
+  abline(res_tNormal$alpha[i], res_tNormal$beta[i], col = adjustcolor("blue", alpha = 0.1))
+}
+abline(alpha0, beta0, col = 'black', lw=2)
+```
+
+##### Teht2
+
+Malli ei selkeästi ole riittävän tehokas. Nyt muokataan mallia sopivammaksi.
+Uusi Stan-malli näyttää nyt tältä:
+
+
+data {
+  int<lower=0> N;
+  vector[N] x;
+  vector[N] y;
+}
+
+parameters {
+  real alpha;
+  real beta;
+  real<lower=0> sigma;
+  real<lower=0> nu; // degrees of freedom
+}
+
+model {
+  nu ~ gamma(2, 0.1);
+  alpha ~ normal(0, 10);
+  beta ~ normal(0, 10);
+  sigma ~ cauchy(0, 5);
+  y ~ student_t(nu, alpha + beta * x, sigma);
+}
+
+
+```{r}
+fit_student_t <- function(x, y) {
+  stan_data <- list(N = length(x), x = x, y = y)
+  fit <- stan(file = "t_distribution.stan", data = stan_data, chains = 4, iter = 2000)
+  extract(fit, pars = c("alpha", "beta", "nu"))
+}
+res_t <- fit_student_t(x2, y2)
+
+hist(res_t$nu, main = "Posterior of degrees of freedom (ν)", xlab = "ν")
+
+plot(x2, y2, ylim = c(-10,40))
+for (i in seq(1, length(res_t$alpha), length.out = 100)) {
+  abline(res_t$alpha[i], res_t$beta[i], col = adjustcolor("blue", alpha = 0.1))
+}
+abline(alpha0, beta0, col = 'black', lw=2)
+```
+
+T-jakauma ottaa paremmin huomioon poikkeavat havainnot. Matalan vapausasteen t-jakauma ei ylireagoi satunnaiseen poikkeavaan havaintoon. Parametrien sovitus näyttää paljon paremmalta kuin aikaisemmin. Suoraparvi on lähellä oikeaa datan luonutta suoraa.
+
+
+On tärkeää huomioida simuloidun aineiston satunnaisvaihtelu.
+```{r}
+plot_sim <- function() {
+  N <- 50; alpha0 <- 0; beta0 <- 3; sigma0 <- 2; df0 <- 1.5
+  x <- seq(0, 10, length.out = N)
+  y <- alpha0 + beta0 * x + rt(N, df = df0) * sigma0
+  stan_data <- list(N = N, x = x, y = y)
+  fit <- rstan::stan(file = "t_distribution.stan", data = stan_data, chains = 4, iter = 2000, refresh = 0)
+  res <- rstan::extract(fit, pars = c("alpha", "beta"))
+  plot(x, y, ylim = c(-10, 40), main = "student t-fit")
+  for (i in seq(1, length(res$alpha), length.out = 100)) {
+    abline(res$alpha[i], res$beta[i], col = adjustcolor("blue", 0.1))
+  }
+  abline(alpha0, beta0, col = "black", lwd = 2)
+}
+plot_sim()
+```
+
+Näin luodaan nopeasti uusia otoksia. Huomataan että alunperin saatu simulaatio vastaa muita simulaatioita hyvin ja kuvastaa "populaatiota". Alkuperäisellä otoksella voidaan siis hyvin tehdä johtopäätöksiä.
+
+
+Tarkastellaan nyt tilannetta, jossa oikea data noudattaisikin normaalijakautunutta virhettä
+
+```{r}
+plot(x, y, ylim = c(-10,40))
+for (i in seq(1, length(res_normal$alpha), length.out = 100)) {
+  abline(res_normal$alpha[i], res_normal$beta[i], col = adjustcolor("blue", alpha = 0.1))
+}
+abline(alpha0, beta0, col = 'black', lw=2)
+```
+
+Vertaillaan nyt näiden mallien posterioreja. Histogrammi alfalle saadaan
+
+```{r}
+hist(res_tNormal$alpha, breaks = 30, col = rgb(1, 0, 0, 0.3), xlim = range(res_t$alpha), main = "Posterior of alpha", xlab = "alpha")
+hist(res_t$alpha, breaks = 30, col = rgb(0, 0, 1, 0.3), add = TRUE)
+legend("topright", legend = c("Normal", "t"), fill = c("red", "blue"))
+```
+
+Sekä betalle
+
+```{r}
+hist(res_tNormal$beta, breaks = 30, col = rgb(1, 0, 0, 0.3), xlim = range(res_t$beta), main = "Posterior of beta", xlab = "beta")
+hist(res_t$beta, breaks = 30, col = rgb(0, 0, 1, 0.3), add = TRUE)
+legend("topright", legend = c("Normal", "t"), fill = c("red", "blue"))
+```
+
+Kummassakin histogrammissa normaali-virheen malli antaa levittäytyneemmät sekä vinoutuneet kuvaajat, kun t-virheen malli tuotaa huipukkaampia tuloksia. Studentin t-malli sopii paremmin, varsinkin kun aineistossa on leveämmät hännät.Normaalimalli on täten epävarmempi ja käsittelee oudokit huonommin. Aineistolla x,y menetetään tarkkuutta.
+
+```{r}
+hist(res_t$nu, breaks = 30, col = "skyblue", main = "Posterior of ν (df)",
+     xlab = "ν (degrees of freedom)")
+abline(v = 1.5, col = "red", lwd = 2, lty = 2)
+```
+
+Posteriorin keskiarvo ei ole kaukana arvosta df=1.5 , joten voidaan luottaa että malli huomioi oudokit jokseenkin hyvin.
+
+
+###### Teht3
+
+```{r results='hide'}
+stan_data <- list(N = N, x = x, y = y)
+fit <- stan(file = "linear_regression_normal.stan", data = stan_data)
+```
+```{r}
+bayesplot::mcmc_trace(fit)
+```
+
+Ketjut näyttävät hyvin sekoittuneilta, eikä niissä ole havaittavissa trendejä. Tämä tukee hyvää konvergenssia. Muista erottuu silti log-posteriorin tiheys, lp_, joka näyttää hankalalta. Tämän tuloksia kannattaa tutkia tarkasti muissa kuvaajissa.
+
+```{r}
+bayesplot::mcmc_acf(fit)
+```
+
+Autokorrelaatiokuvaaja antaa myös viitteitä hyvästä konvergenssista. Jokaiselle parametrille on vähintään yksi kuvaaja, jonka autokorrelaatio menee nollaan viidenteen lagiin mennessä. Jokaisessa kuvaajassa autokorrelaatio putoaa nopeasti lähelle nollaa, pienenä poikkeuksena vain yksi lp_ kuvaaja. Ei silti voisi sanoa että jonkin parametrin autokorrelaatiot poikkeaisivat muista.
+
+```{r} 
+bayesplot::mcmc_neff(bayesplot::neff_ratio(fit))
+```
+
+Tehokkaiden näytteiden suhde antaa vahvan kuvan otoskoon luotettavuudesta. Kaikki kuvaajan pisteet ovat selkeästi yli minimirajan 0.1, yhden pisteen ylittäen jopa arvon 0.5. Voidaan olettaa siis MCMC-sovitteen generoivan otoksia, joilla voidaan tehdä luotettavia johtopäätöksiä.
+
+```{r} 
+bayesplot::mcmc_rhat(bayesplot::rhat(fit))
+```
+
+Kaikki Rhat arvot ovat erittäin lähellä arvoa 1.0. Voidaan sanoa, että MCMC-ajot ovat konvergoituneita.
+
+
+##### Teht4
+
+Stan tiedostossa tilde-lauseilla lisätään parametreja malliin. Näin autetaan määrittämään mallia tarkemmaksi.
